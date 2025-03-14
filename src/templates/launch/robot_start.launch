@@ -1,0 +1,6 @@
+<launch>
+  <node name="proximity_sensor_node" pkg="6wd_control" type="proximity_sensor.py" output="screen" />
+  <node name="cmd_vel_subscriber" pkg="6wd_control" type="cmd_vel_subscriber.py" output="screen" />
+  #<node name="usb_camera_node" pkg="6wd_control" type="usb_camera.py" output="screen" />
+  <node name="lcd_display_node" pkg="6wd_control" type="lcd_display.py" output="screen" />
+</launch>
