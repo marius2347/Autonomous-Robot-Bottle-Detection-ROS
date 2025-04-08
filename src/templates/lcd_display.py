@@ -62,10 +62,12 @@ def main():
 
         prediction = best_model.predict(img_array)[0][0]
         if prediction > 0.5:
-            lcd_msg = "STICLA ESTE\nNEDETECTATA\nP: {:.2f}".format(prediction)
+            prediction -= 0.55
+            lcd_msg = "NU ESTE STICLA!\nP: {:.2f}".format(prediction)
             lcd.color = [255, 0, 0]  # roșu pentru ne-detectare
         else:
-            lcd_msg = "STICLA ESTE\nDETECTATA\nP: {:.2f}".format(prediction)
+            prediction += 0.55
+            lcd_msg = "ESTE STICLA!\nP: {:.2f}".format(prediction)
             lcd.color = [0, 255, 0]  # verde pentru detectare
 
         lcd.clear()
