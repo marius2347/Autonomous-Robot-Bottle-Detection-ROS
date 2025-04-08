@@ -31,6 +31,7 @@ def camera_publisher():
         os.makedirs(image_folder, exist_ok=True)
 
     rate = rospy.Rate(10)
+    last_save_time = rospy.get_time()
     rospy.loginfo("Nodul de cameră a pornit...")
     while not rospy.is_shutdown():
         ret, frame = cap.read()
@@ -39,8 +40,10 @@ def camera_publisher():
             continue
 
         current_time = rospy.get_time()
-        filename = os.path.join(image_folder, "image_{:.6f}.jpg".format(current_time))
-        cv2.imwrite(filename, frame)
+        if current_time - last_save_time >= 5:
+            filename = os.path.join(image_folder, "image_{:.6f}.jpg".format(current_time))
+            cv2.imwrite(filename, frame)
+            last_save_time = current_time
 
         img_msg = numpy_to_image_msg(frame, frame_id="camera")
         image_pub.publish(img_msg)
