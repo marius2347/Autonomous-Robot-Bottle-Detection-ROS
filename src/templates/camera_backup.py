@@ -2,7 +2,6 @@
 import rospy
 import cv2
 import numpy as np
-import os
 from sensor_msgs.msg import Image, CameraInfo
 
 def numpy_to_image_msg(np_img, frame_id="camera"):
@@ -25,11 +24,6 @@ def camera_publisher():
     if not cap.isOpened():
         rospy.logerr("Camera nu poate fi deschisă!")
         return
-
-    image_folder = "/home/marius/ros_catkin_ws/src/6wd_control/images"
-    if not os.path.exists(image_folder):
-        os.makedirs(image_folder, exist_ok=True)
-
     rate = rospy.Rate(10)
     rospy.loginfo("Nodul de cameră a pornit...")
     while not rospy.is_shutdown():
@@ -37,14 +31,8 @@ def camera_publisher():
         if not ret:
             rospy.logwarn("Nu s-a capturat o imagine!")
             continue
-
-        current_time = rospy.get_time()
-        filename = os.path.join(image_folder, "image_{:.6f}.jpg".format(current_time))
-        cv2.imwrite(filename, frame)
-
         img_msg = numpy_to_image_msg(frame, frame_id="camera")
         image_pub.publish(img_msg)
-
         ci = CameraInfo()
         ci.header.stamp = rospy.Time.now()
         ci.header.frame_id = "camera"
@@ -59,7 +47,6 @@ def camera_publisher():
         ci.D = [0, 0, 0, 0, 0]
         ci.R = [1, 0, 0, 0, 1, 0, 0, 0, 1]
         info_pub.publish(ci)
-
         rate.sleep()
     cap.release()
 
