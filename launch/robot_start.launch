@@ -1,7 +1,6 @@
 <launch>
   <node name="proximity_sensor_node" pkg="6wd_control" type="proximity_sensor.py" output="screen"
         launch-prefix="sudo srosrun" />
-  <node name="camera_node" pkg="6wd_control" type="camera.py" output="screen" />
-  <node name="lcd_display_node" pkg="6wd_control" type="lcd_display.py" output="screen" />
+  <node name="camera_lcd_predict_node" pkg="6wd_control" type="camera_lcd_predict.py" output="screen" />
   <node name="slam_ros_node" pkg="6wd_control" type="slam_ros.py" output="screen" />
 </launch>
