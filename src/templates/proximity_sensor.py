@@ -35,24 +35,39 @@ def proximity_sensors_publisher():
         rospy.init_node('proximity_sensors_node', anonymous=True)
     except rospy.ROSInitException:
         sys.exit(0)
+
     pub1 = rospy.Publisher('/sensor/proximity1', Float32, queue_size=10)
     pub2 = rospy.Publisher('/sensor/proximity2', Float32, queue_size=10)
     pub3 = rospy.Publisher('/sensor/proximity3', Float32, queue_size=10)
+
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(TRIG, GPIO.OUT)
     GPIO.setup(ECHO1, GPIO.IN)
     GPIO.setup(ECHO2, GPIO.IN)
     GPIO.setup(ECHO3, GPIO.IN)
+
     rate = rospy.Rate(20)
+
     while not rospy.is_shutdown():
-        dist1 = read_distance(ECHO1)
-        dist2 = read_distance(ECHO2)
-        dist3 = read_distance(ECHO3)
-        rospy.loginfo(f"Dist1: {dist1}  Dist2: {dist2}  Dist3: {dist3}")
-        pub1.publish(dist1)
-        pub2.publish(dist2)
-        pub3.publish(dist3)
+        raw_d1 = read_distance(ECHO1)
+        raw_d2 = read_distance(ECHO2)
+        raw_d3 = read_distance(ECHO3)
+
+        valid_distances = [d for d in [raw_d1, raw_d2, raw_d3] if 0 < d < 100]
+        avg = sum(valid_distances) / len(valid_distances) if valid_distances else 50.0
+
+        d1 = raw_d1 if 0 < raw_d1 < 100 else avg
+        d2 = raw_d2 if 0 < raw_d2 < 100 else avg
+        d3 = raw_d3 if 0 < raw_d3 < 100 else avg
+
+        rospy.loginfo(f"Dist_front: {d1:.2f}  Dist_right: {d2:.2f}  Dist_left: {d3:.2f}")
+
+        pub1.publish(d1)
+        pub2.publish(d2)
+        pub3.publish(d3)
+
         rate.sleep()
+
     GPIO.cleanup()
 
 proximity_sensors_publisher()
