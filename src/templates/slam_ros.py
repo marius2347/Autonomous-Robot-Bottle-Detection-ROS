@@ -105,7 +105,7 @@ def read_one_circle(ser):
 
 def main():
     rospy.init_node("d200_lidar_node")
-    port = rospy.get_param("~port", "/dev/ttyUSB1")
+    port = rospy.get_param("~port", "/dev/ttyUSB0")
     baud_rate = rospy.get_param("~baudrate", 230400)
     frame_id = rospy.get_param("~frame_id", "laser_link")
     pub_topic = rospy.get_param("~scan_topic", "/scan")
