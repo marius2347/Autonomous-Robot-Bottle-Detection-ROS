@@ -1,229 +1,141 @@
 #!/usr/bin/env python3
+"""
+cmd_vel_subscriber.py (modified)
+—————————
+Subscribes to /cmd_vel and three proximity sensors,
+executes: stop → pause → backup → side-turn → drive forward on front obstacle.
+"""
 
-import sys
-import rospy
+import sys, time, os, random, rospy, pyfirmata2, serial
 from geometry_msgs.msg import Twist
-import pyfirmata2
-import serial
-import time
-import random
 from std_msgs.msg import Float32
-import os
 
-# Distance between wheels, for differential drive calculation
-L = 0.5
+########################  USER-TUNABLE CONSTANTS  ########################
+L                    = 0.5    # wheel baseline (m)
+ARDUINO_PORT         = '/dev/ttyACM0' if os.path.exists('/dev/ttyACM0') else '/dev/ttyACM1'
 
-# Try to auto-detect the Arduino port
-port = '/dev/ttyACM0'
-if not os.path.exists(port):
-    port = '/dev/ttyACM1'
+obstacle_threshold   = 40.0   # cm – front sensor threshold
+avoid_speed          = 0.3    # PWM duty (0-1) for avoidance maneuvers
+backup_distance      = 0.3    # m – reverse distance during avoidance
+TURN_SEC             = 5.0    # turn duration (s)
+STOP_SEC             = 5.0    # pause duration when obstacle detected
+#########################################################################
 
-# Obstacle avoidance settings
-obstacle_threshold = 50.0
-avoid_speed = 0.2
+#                    GLOBAL STATE (updated in callbacks)                #
+last_front      = float('inf')
+last_right      = float('inf')
+last_left       = float('inf')
+obstacle_active = False
+#########################################################################
 
-# Global variables for user commands
-user_linear_x = 0.0
-user_angular_z = 0.0
+############################  ARDUINO / MOTORS  #########################
 
-# We now have three distances to track
-last_distance1 = float('inf')
-last_distance2 = float('inf')
-last_distance3 = float('inf')
-
-# Keep track if we’re currently avoiding an obstacle
-obstacle_detected = False
-
-############################################
-# Arduino reset and motor control
-############################################
 def reset_arduino(port):
     ser = serial.Serial(port, 9600)
-    ser.dtr = False
-    time.sleep(1)
-    ser.dtr = True
-    ser.close()
+    ser.dtr = False; time.sleep(1); ser.dtr = True; ser.close()
 
-def set_wheel(M_PWM, M_DIR1, M_DIR2, speed):
-    """
-    speed > 0 => forward
-    speed < 0 => backward
-    speed = 0 => stop
-    """
-    if speed > 0:
-        M_DIR1.write(1)
-        M_DIR2.write(0)
-        M_PWM.write(min(abs(speed), 1.0))
-    elif speed < 0:
-        M_DIR1.write(0)
-        M_DIR2.write(1)
-        M_PWM.write(min(abs(speed), 1.0))
-    else:
-        M_DIR1.write(0)
-        M_DIR2.write(0)
-        M_PWM.write(0)
+
+def set_wheel(pwm, d1, d2, speed):
+    d1.write(int(speed > 0)); d2.write(int(speed < 0))
+    pwm.write(min(abs(speed), 1.0))
+
 
 def stop():
-    set_wheel(M1_PWM, M1_DIR1, M1_DIR2, 0)
-    set_wheel(M2_PWM, M2_DIR1, M2_DIR2, 0)
+    set_wheel(M1_PWM, M1_D1, M1_D2, 0)
+    set_wheel(M2_PWM, M2_D1, M2_D2, 0)
 
-def drive_user_speed():
-    """
-    Simple differential drive:
-    left_wheel_speed  = linear_x - (angular_z * L/2)
-    right_wheel_speed = linear_x + (angular_z * L/2)
-    """
-    left = user_linear_x - (user_angular_z * L / 2.0)
-    right = user_linear_x + (user_angular_z * L / 2.0)
-    set_wheel(M1_PWM, M1_DIR1, M1_DIR2, left)
-    set_wheel(M2_PWM, M2_DIR1, M2_DIR2, right)
 
-def turn_left(duration=1.0):
-    set_wheel(M1_PWM, M1_DIR1, M1_DIR2, -avoid_speed)
-    set_wheel(M2_PWM, M2_DIR1, M2_DIR2,  avoid_speed)
-    time.sleep(duration)
+def reverse(sec):
+    rospy.loginfo("REVERSING for %.2f s", sec)
+    set_wheel(M1_PWM, M1_D1, M1_D2, -avoid_speed)
+    set_wheel(M2_PWM, M2_D1, M2_D2, -avoid_speed)
+    time.sleep(sec)
     stop()
 
-def turn_right(duration=1.0):
-    set_wheel(M1_PWM, M1_DIR1, M1_DIR2,  avoid_speed)
-    set_wheel(M2_PWM, M2_DIR1, M2_DIR2, -avoid_speed)
-    time.sleep(duration)
+
+def turn_left(sec=TURN_SEC):
+    rospy.loginfo("TURNING LEFT for %.2f s", sec)
+    set_wheel(M1_PWM, M1_D1, M1_D2, -avoid_speed)
+    set_wheel(M2_PWM, M2_D1, M2_D2,  avoid_speed)
+    time.sleep(sec)
     stop()
 
-def avoid_obstacle():
-    """
-    Stop, then randomly turn left or right, then resume user speed.
-    """
-    global obstacle_detected
-    obstacle_detected = True  # Let everyone know we’re in "avoidance" mode
+
+def turn_right(sec=TURN_SEC):
+    rospy.loginfo("TURNING RIGHT for %.2f s", sec)
+    set_wheel(M1_PWM, M1_D1, M1_D2,  avoid_speed)
+    set_wheel(M2_PWM, M2_D1, M2_D2, -avoid_speed)
+    time.sleep(sec)
     stop()
-    rospy.loginfo("Avoiding obstacle...")
-    
-    # Random choice to turn left or right
-    if random.choice([True, False]):
-        rospy.loginfo("Turning LEFT")
+
+
+def drive_forward():
+    rospy.loginfo("DRIVING FORWARD at avoid_speed")
+    set_wheel(M1_PWM, M1_D1, M1_D2, avoid_speed)
+    set_wheel(M2_PWM, M2_D1, M2_D2, avoid_speed)
+
+############################  AVOIDANCE SEQUENCE  ########################
+def perform_avoidance():
+    global obstacle_active
+    obstacle_active = True
+
+    rospy.loginfo("---- Avoidance sequence START ----")
+    rospy.loginfo("Stopping for %.2f s", STOP_SEC)
+    stop(); time.sleep(STOP_SEC)
+
+    backup_sec = backup_distance / avoid_speed
+    rospy.loginfo("Backing up %.2f m (%.2f s)", backup_distance, backup_sec)
+    reverse(backup_sec)
+
+    rospy.loginfo("Checking sides: left=%.2f cm, right=%.2f cm", last_left, last_right)
+    if last_left > obstacle_threshold:
+        rospy.loginfo("Left side clear (%.2f cm) → turning left", last_left)
         turn_left()
-    else:
-        rospy.loginfo("Turning RIGHT")
+    elif last_right > obstacle_threshold:
+        rospy.loginfo("Right side clear (%.2f cm) → turning right", last_right)
         turn_right()
-    
-    # Resume user command after avoid
-    drive_user_speed()
+    else:
+        choice = random.choice(["left", "right"])
+        rospy.loginfo("Neither side clear → random %s turn", choice)
+        turn_left() if choice == "left" else turn_right()
 
-############################################
-# ROS Callbacks
-############################################
-def cmd_vel_callback(msg):
-    """
-    Stores the latest linear/angular velocity command
-    and tries to drive at that speed unless avoiding obstacle.
-    """
-    global user_linear_x, user_angular_z, obstacle_detected
-    user_linear_x = msg.linear.x
-    user_angular_z = msg.angular.z
+    drive_forward()
+    rospy.loginfo("Avoidance sequence COMPLETE")
+    obstacle_active = False
 
-    # If we are not in obstacle avoidance, drive user speed
-    obstacle_detected = False
-    drive_user_speed()
+############################  ROS CALLBACKS  ###########################
+def prox_front_cb(msg):
+    global last_front
+    last_front = msg.data
+    rospy.loginfo("Front sensor: %.2f cm", last_front)
+    if not obstacle_active and last_front < obstacle_threshold:
+        perform_avoidance()
 
-def check_all_sensors():
-    """
-    Checks if any sensor is below the threshold; if so, calls avoid_obstacle().
-    """
-    global last_distance1, last_distance2, last_distance3, obstacle_detected
 
-    # If any distance < obstacle_threshold => avoid
-    if (
-        last_distance1 < obstacle_threshold or
-        last_distance2 < obstacle_threshold or
-        last_distance3 < obstacle_threshold
-    ) and not obstacle_detected:
-        avoid_obstacle()
+def prox_right_cb(msg):
+    global last_right
+    last_right = msg.data
+    rospy.loginfo("Right sensor: %.2f cm", last_right)
 
-def proximity1_callback(msg):
-    """
-    Callback for sensor 1.
-    Ignores invalid readings (i.e., -1 or any negative).
-    """
-    global last_distance1
-    if msg.data < 0:
-        # Don't update or log negative/invalid readings
-        return
 
-    last_distance1 = msg.data
-    rospy.loginfo("Proximity1: %.2f cm", last_distance1)
-    check_all_sensors()
+def prox_left_cb(msg):
+    global last_left
+    last_left = msg.data
+    rospy.loginfo("Left sensor: %.2f cm", last_left)
 
-def proximity2_callback(msg):
-    """
-    Callback for sensor 2.
-    Ignores invalid readings (i.e., -1 or any negative).
-    """
-    global last_distance2
-    if msg.data < 0:
-        return
-
-    last_distance2 = msg.data
-    rospy.loginfo("Proximity2: %.2f cm", last_distance2)
-    check_all_sensors()
-
-def proximity3_callback(msg):
-    """
-    Callback for sensor 3.
-    Ignores invalid readings (i.e., -1 or any negative).
-    """
-    global last_distance3
-    if msg.data < 0:
-        return
-
-    last_distance3 = msg.data
-    rospy.loginfo("Proximity3: %.2f cm", last_distance3)
-    check_all_sensors()
-
-def on_shutdown():
-    rospy.loginfo("Shutting down, stopping motors.")
-    stop()
-    # Ensure PWM and DIR pins are off
-    M1_PWM.write(0)
-    M1_DIR1.write(0)
-    M1_DIR2.write(0)
-    M2_PWM.write(0)
-    M2_DIR1.write(0)
-    M2_DIR2.write(0)
-    time.sleep(0.5)
-    board.exit()
-
-############################################
-# Main Node Init
-############################################
-try:
+############################  ROS BOILERPLATE  ##########################
+if __name__ == '__main__':
     rospy.init_node('cmd_vel_to_motor_control')
-except rospy.ROSInitException:
-    print("ROS not running. Exiting...")
-    sys.exit(0)
 
-# Setup the Arduino
-reset_arduino(port)
-board = pyfirmata2.Arduino(port)
+    reset_arduino(ARDUINO_PORT)
+    board = pyfirmata2.Arduino(ARDUINO_PORT)
+    M1_PWM = board.get_pin('d:9:p');  M1_D1 = board.get_pin('d:2:o'); M1_D2 = board.get_pin('d:4:o')
+    M2_PWM = board.get_pin('d:10:p'); M2_D1 = board.get_pin('d:7:o'); M2_D2 = board.get_pin('d:8:o')
+    board.samplingOn()
 
-# Setup the pins
-M1_PWM   = board.get_pin('d:9:p')
-M1_DIR1  = board.get_pin('d:2:o')
-M1_DIR2  = board.get_pin('d:4:o')
-M2_PWM   = board.get_pin('d:10:p')
-M2_DIR1  = board.get_pin('d:7:o')
-M2_DIR2  = board.get_pin('d:8:o')
+    rospy.Subscriber('/sensor/proximity1', Float32, prox_front_cb)
+    rospy.Subscriber('/sensor/proximity2', Float32, prox_right_cb)
+    rospy.Subscriber('/sensor/proximity3', Float32, prox_left_cb)
 
-board.samplingOn()
-
-# Register shutdown hook
-rospy.on_shutdown(on_shutdown)
-
-# Subscribers
-rospy.Subscriber('/cmd_vel', Twist, cmd_vel_callback)
-rospy.Subscriber('/sensor/proximity1', Float32, proximity1_callback)
-rospy.Subscriber('/sensor/proximity2', Float32, proximity2_callback)
-rospy.Subscriber('/sensor/proximity3', Float32, proximity3_callback)
-
-rospy.loginfo("cmd_vel_to_motor_control node started. Waiting for /cmd_vel and sensor topics.")
-rospy.spin()
+    rospy.loginfo("Node ready – threshold: %.2f cm, backup: %.2f m", obstacle_threshold, backup_distance)
+    rospy.spin()

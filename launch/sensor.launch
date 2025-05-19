@@ -1,0 +1,4 @@
+<launch>
+  <node name="proximity_sensor_node_launch" pkg="6wd_control" type="proximity_sensor.py" output="screen"
+        launch-prefix="sudo srosrun" />
+</launch>
