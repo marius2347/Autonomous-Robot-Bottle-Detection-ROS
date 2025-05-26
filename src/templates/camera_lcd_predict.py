@@ -15,6 +15,7 @@ class CustomDepthwiseConv2D(BaseDepthwiseConv2D):
         if "groups" in kwargs:
             kwargs.pop("groups")
         super().__init__(*args, **kwargs)
+
     @classmethod
     def from_config(cls, config):
         config.pop("groups", None)
@@ -36,40 +37,53 @@ def main():
     rospy.init_node("camera_lcd_node", anonymous=True)
     image_pub = rospy.Publisher("/camera/image_raw", Image, queue_size=10)
     info_pub = rospy.Publisher("/camera/camera_info", CameraInfo, queue_size=10)
+
     i2c = board.I2C()
     lcd = character_lcd.Character_LCD_RGB_I2C(i2c, 16, 2)
     lcd.clear()
     lcd.color = [0, 0, 255]
     lcd.message = "Se incarca\nmodelul..."
-    model = load_model("/home/marius/ros_catkin_ws/src/6wd_control/models/best_model.h5",
-                       custom_objects={"DepthwiseConv2D": CustomDepthwiseConv2D})
+    time.sleep(0.5)
+
+    model = load_model(
+        "/home/marius/ros_catkin_ws/src/6wd_control/models/best_model.h5",
+        custom_objects={"DepthwiseConv2D": CustomDepthwiseConv2D}
+    )
+
     time.sleep(2)
     lcd.clear()
     lcd.message = "Model incarcat!"
     time.sleep(1)
     lcd.clear()
+
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         rospy.logerr("Camera nu poate fi deschisa!")
         return
+
     folder = "/home/marius/ros_catkin_ws/src/6wd_control/images"
     if not os.path.exists(folder):
         os.makedirs(folder, exist_ok=True)
+
     rate = rospy.Rate(10)
     last_save = rospy.get_time()
+
     while not rospy.is_shutdown():
         ret, frame = cap.read()
         if not ret:
             continue
+
         now = rospy.get_time()
         if now - last_save >= 5:
             path = os.path.join(folder, "image_{:.6f}.jpg".format(now))
             cv2.imwrite(path, frame)
             last_save = now
+
             img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img_resized = cv2.resize(img_rgb, (224, 224))
             arr = np.expand_dims(img_resized, axis=0) / 255.0
             pred = model.predict(arr)[0][0]
+
             if pred > 0.5:
                 pred -= 0.55
                 lcd.color = [255, 0, 0]
@@ -78,10 +92,23 @@ def main():
                 pred += 0.55
                 lcd.color = [0, 255, 0]
                 lcd_msg = "ESTE STICLA!\nP: {:.2f}".format(pred)
+
             lcd.clear()
             lcd.message = lcd_msg
+
+            # ✅ Log în terminal
+            rospy.loginfo(lcd_msg.replace("\n", " | "))
+
+            # 📝 (Opțional) Log și într-un fișier
+            """
+            with open("/home/marius/ros_catkin_ws/src/6wd_control/logs/predict_log.txt", "a") as f:
+                f.write("[{:.2f}] {}\n".format(now, lcd_msg.replace("\n", " | ")))
+            """
+
+        # Publicare imagine și info
         img_msg = numpy_to_image_msg(frame)
         image_pub.publish(img_msg)
+
         ci = CameraInfo()
         ci.header.stamp = rospy.Time.now()
         ci.header.frame_id = "camera"
@@ -96,7 +123,9 @@ def main():
         ci.D = [0, 0, 0, 0, 0]
         ci.R = [1, 0, 0, 0, 1, 0, 0, 0, 1]
         info_pub.publish(ci)
+
         rate.sleep()
+
     cap.release()
     lcd.clear()
     lcd.color = [0, 0, 0]
