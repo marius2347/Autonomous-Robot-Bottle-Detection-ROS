@@ -1,189 +1,121 @@
 #!/usr/bin/env python3
-import sys, time, os, random, rospy, pyfirmata2, serial, threading
+import time, os, random, threading, rospy, pyfirmata2, serial
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32
 
-# ————————— USER-TUNABLE CONSTANTS —————————
-L                         = 0.5
-ARDUINO_PORT              = '/dev/ttyACM0' if os.path.exists('/dev/ttyACM0') else '/dev/ttyACM1'
-obstacle_threshold        = 20.0      # cm
-avoid_speed               = 0.3       # PWM (0–1)
-backup_distance           = 0.8       # m
-TURN_SEC                  = 3.0       # sec
-STOP_SEC                  = 0.5       # sec
-FORWARD_AFTER_TURN_SEC    = 5.0       # sec
-CMD_VEL_TIMEOUT           = 1.0       # sec
-AVOIDANCE_COOLDOWN_SEC    = 5.0       # sec
-# ————————————————————————————————————————————
+# ————— PARAMETERS —————
+ARDUINO_PORT       = '/dev/ttyACM0' if os.path.exists('/dev/ttyACM0') else '/dev/ttyACM1'
+OBSTACLE_THRESHOLD = 20.0   # cm
+AVOID_SPEED        = 0.3    # PWM (0–1)
+BACKUP_DISTANCE    = 0.3    # m
+TURN_DURATION      = 3.0    # sec
+FORWARD_DURATION   = 1.0    # sec
+# ———————————————————
 
-# ————— GLOBAL STATE + LOCKS —————
-last_front      = float('inf')
-last_right      = float('inf')
-last_left       = float('inf')
+# ————— GLOBAL STATE —————
+last_front = last_right = last_left = float('inf')
 obstacle_active = False
-last_cmd_time   = time.time()
-last_avoidance_time = 0
-
-lock_front = threading.Lock()
-lock_right = threading.Lock()
-lock_left = threading.Lock()
-lock_state = threading.Lock()
-lock_cmd   = threading.Lock()
-# ——————————————————————————————————
+board = None
+M1_PWM = M1_D1 = M1_D2 = M2_PWM = M2_D1 = M2_D2 = None
+# ——————————————————————
 
 def reset_arduino(port):
-    ser = serial.Serial(port, 9600)
-    ser.dtr = False; time.sleep(1); ser.dtr = True; ser.close()
+    """Toggle DTR on Arduino to reset it."""
+    try:
+        ser = serial.Serial(port, 9600)
+        ser.dtr = False; time.sleep(1)
+        ser.dtr = True; ser.close()
+        rospy.loginfo("Arduino reset.")
+    except Exception as e:
+        rospy.logwarn(f"Arduino reset failed: {e}")
 
-def set_both_wheels(left_speed, right_speed):
-    M1_D1.write(int(left_speed > 0))
-    M1_D2.write(int(left_speed < 0))
-    M1_PWM.write(min(abs(left_speed), 1.0))
-
-    M2_D1.write(int(right_speed > 0))
-    M2_D2.write(int(right_speed < 0))
-    M2_PWM.write(min(abs(right_speed), 1.0))
+def set_wheels(left, right):
+    """Set left/right motor speeds (-1.0 to 1.0)."""
+    M1_D1.write(left > 0); M1_D2.write(left < 0)
+    M2_D1.write(right > 0); M2_D2.write(right < 0)
+    M1_PWM.write(abs(left)); M2_PWM.write(abs(right))
 
 def stop():
-    set_both_wheels(0, 0)
-
-def reverse(sec):
-    rospy.loginfo("REVERSING for %.2f s", sec)
-    set_both_wheels(-avoid_speed, -avoid_speed)
-    time.sleep(sec)
-    stop()
-    time.sleep(STOP_SEC)
-
-def turn_left(sec=TURN_SEC):
-    rospy.loginfo("TURNING LEFT for %.2f s", sec)
-    set_both_wheels(-avoid_speed, avoid_speed)
-    time.sleep(sec)
-    stop()
-    time.sleep(STOP_SEC)
-
-def turn_right(sec=TURN_SEC):
-    rospy.loginfo("TURNING RIGHT for %.2f s", sec)
-    set_both_wheels(avoid_speed, -avoid_speed)
-    time.sleep(sec)
-    stop()
-    time.sleep(STOP_SEC)
-
-def drive_forward(sec=FORWARD_AFTER_TURN_SEC):
-    rospy.loginfo("DRIVING FORWARD for %.2f s", sec)
-    set_both_wheels(avoid_speed, avoid_speed)
-    time.sleep(sec)
-    stop()
-    time.sleep(STOP_SEC)
+    """Stop both motors."""
+    set_wheels(0, 0)
 
 def perform_avoidance():
-    global obstacle_active, last_avoidance_time
-    with lock_state:
-        obstacle_active = True
+    """Backup, choose clear side, turn, then drive forward."""
+    global obstacle_active
+    obstacle_active = True
+    stop(); time.sleep(0.5)
 
-    rospy.loginfo("==== AVOIDANCE START ====")
-    stop()
-    time.sleep(STOP_SEC)
+    # Backup
+    bt = BACKUP_DISTANCE / AVOID_SPEED
+    rospy.loginfo(f"Backing up for {bt:.2f}s")
+    set_wheels(-AVOID_SPEED, -AVOID_SPEED); time.sleep(bt)
+    stop(); time.sleep(0.5)
 
-    backup_sec = backup_distance / avoid_speed
-    rospy.loginfo("Step: BACKUP %.2f m → %.2f s", backup_distance, backup_sec)
-    reverse(backup_sec)
-
-    with lock_left:  left  = last_left
-    with lock_right: right = last_right
-    rospy.loginfo("Step: CHECK sides – L=%.2f cm | R=%.2f cm", left, right)
-
-    if left > obstacle_threshold:
-        rospy.loginfo("Step: TURN LEFT")
-        turn_left()
-    elif right > obstacle_threshold:
-        rospy.loginfo("Step: TURN RIGHT")
-        turn_right()
+    # Choose direction
+    dir = 'left' if last_left > OBSTACLE_THRESHOLD else 'right'
+    rospy.loginfo(f"Turning {dir}")
+    if dir=='left':
+        set_wheels(-AVOID_SPEED, AVOID_SPEED)
     else:
-        choice = random.choice(['left','right'])
-        rospy.loginfo("Both blocked → RANDOM %s", choice)
-        turn_left() if choice == 'left' else turn_right()
+        set_wheels(AVOID_SPEED, -AVOID_SPEED)
+    time.sleep(TURN_DURATION); stop(); time.sleep(0.5)
 
-    rospy.loginfo("Step: FORWARD after turn")
-    drive_forward()
-
-    with lock_state:
-        obstacle_active = False
-        last_avoidance_time = time.time()
-    rospy.loginfo("==== AVOIDANCE DONE ====")
+    # Forward
+    rospy.loginfo("Driving forward")
+    set_wheels(AVOID_SPEED, AVOID_SPEED); time.sleep(FORWARD_DURATION)
+    stop(); obstacle_active = False
 
 def prox_front_cb(msg):
+    """Front sensor: trigger avoidance if too close."""
     global last_front
-    v = msg.data
-    with lock_front:
-        last_front = v
-    rospy.loginfo("Front: %.2f cm", v)
+    last_front = msg.data
+    if not obstacle_active and last_front < OBSTACLE_THRESHOLD:
+        rospy.loginfo("Front obstacle detected")
+        perform_avoidance()
 
-    now = time.time()
-    with lock_state:
-        if (not obstacle_active and v < obstacle_threshold and
-                now - last_avoidance_time > AVOIDANCE_COOLDOWN_SEC):
-            rospy.loginfo("Obstacle detected → triggering avoidance")
-            threading.Thread(target=perform_avoidance, daemon=True).start()
-
-def prox_right_cb(msg):
-    global last_right
-    with lock_right:
-        last_right = msg.data
-    rospy.loginfo("Right: %.2f cm", last_right)
-
-def prox_left_cb(msg):
-    global last_left
-    with lock_left:
-        last_left = msg.data
-    rospy.loginfo("Left: %.2f cm", last_left)
+def prox_side_cb(msg, side):
+    """Update left/right sensor readings."""
+    globals()[f"last_{side}"] = msg.data
 
 def cmd_vel_cb(msg):
-    global last_cmd_time
-    with lock_cmd:
-        last_cmd_time = time.time()
-
-    with lock_state:
-        if obstacle_active:
-            rospy.loginfo("Ignoring cmd_vel – in avoidance")
-            return
-
-    lin = msg.linear.x
-    ang = msg.angular.z
-
-    if lin == 0 and ang == 0:
-        rospy.loginfo("cmd_vel zero → STOP")
-        stop()
+    """Drive based on /cmd_vel, unless avoiding."""
+    if obstacle_active:
         return
+    lin, ang = msg.linear.x, msg.angular.z
+    if lin==0 and ang==0:
+        stop(); return
+    # Differential-drive kinematics (wheelbase = 0.5m)
+    L = 0.5
+    left  = lin - ang*L/2
+    right = lin + ang*L/2
+    set_wheels(left, right)
 
-    lspd = lin - ang * L / 2
-    rspd = lin + ang * L / 2
-    rospy.loginfo("cmd_vel → L=%.2f R=%.2f", lspd, rspd)
-    set_both_wheels(lspd, rspd)
-
-def monitor_cmd_vel():
-    rate = rospy.Rate(5)
+def exit_listener():
+    """Wait for 'c'+Enter to shutdown and reset Arduino."""
     while not rospy.is_shutdown():
-        with lock_cmd:
-            if time.time() - last_cmd_time > CMD_VEL_TIMEOUT:
-                rospy.loginfo("cmd_vel timeout → STOP")
-                stop()
-        rate.sleep()
+        if input().strip().lower() == 'c':
+            rospy.loginfo("User requested shutdown")
+            stop(); board.exit(); reset_arduino(ARDUINO_PORT)
+            rospy.signal_shutdown("shutdown by user")
 
 if __name__ == '__main__':
-    rospy.init_node('cmd_vel_to_motor_control')
+    rospy.init_node('motor_control')
 
+    # Start exit listener thread
+    threading.Thread(target=exit_listener, daemon=True).start()
+
+    # Arduino init
     reset_arduino(ARDUINO_PORT)
     board = pyfirmata2.Arduino(ARDUINO_PORT)
-    M1_PWM = board.get_pin('d:9:p');  M1_D1 = board.get_pin('d:2:o'); M1_D2 = board.get_pin('d:4:o')
-    M2_PWM = board.get_pin('d:10:p'); M2_D1 = board.get_pin('d:7:o'); M2_D2 = board.get_pin('d:8:o')
+    M1_PWM = board.get_pin('d:9:p');  M1_D1 = board.get_pin('d:2:o');  M1_D2 = board.get_pin('d:4:o')
+    M2_PWM = board.get_pin('d:10:p'); M2_D1 = board.get_pin('d:7:o');  M2_D2 = board.get_pin('d:8:o')
     board.samplingOn()
 
+    # Subscribers
     rospy.Subscriber('/sensor/proximity1', Float32, prox_front_cb)
-    rospy.Subscriber('/sensor/proximity2', Float32, prox_right_cb)
-    rospy.Subscriber('/sensor/proximity3', Float32, prox_left_cb)
+    rospy.Subscriber('/sensor/proximity2', Float32, lambda m: prox_side_cb(m,'right'))
+    rospy.Subscriber('/sensor/proximity3', Float32, lambda m: prox_side_cb(m,'left'))
     rospy.Subscriber('/cmd_vel', Twist, cmd_vel_cb)
 
-    threading.Thread(target=monitor_cmd_vel, daemon=True).start()
-
-    rospy.loginfo("Node ready – thresh=%.2f cm, backup=%.2f m", obstacle_threshold, backup_distance)
+    rospy.loginfo("Node ready")
     rospy.spin()
