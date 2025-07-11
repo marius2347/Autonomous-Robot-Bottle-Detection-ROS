@@ -106,5 +106,4 @@ For questions, suggestions, or collaborations:
 ## 🛠️ Future Improvements
 
 - Add collection mechanism once a bottle is detected.
-- Use LiDAR for better mapping and SLAM.
 - Implement advanced object tracking and bounding boxes in real-time.
