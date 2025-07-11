@@ -52,13 +52,13 @@ Autonomous-Robot-Bottle-Detection-ROS/
 
 ## ⚙️ Requirements
 
-- ROS Noetic / Melodic (tested on Ubuntu 20.04)
+- ROS Noetic (tested on Ubuntu 20.04)
 - Python 3.8+
 - Packages:
   - `rospy`
   - `sensor_msgs`
   - `cv_bridge`, `OpenCV`
-  - `PyTorch` (for neural network inference)
+  - `Tensorflow` (for neural network inference)
 
 ---
 
