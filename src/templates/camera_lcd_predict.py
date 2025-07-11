@@ -96,16 +96,16 @@ def main():
             lcd.clear()
             lcd.message = lcd_msg
 
-            # ✅ Log în terminal
+
             rospy.loginfo(lcd_msg.replace("\n", " | "))
 
-            # 📝 (Opțional) Log și într-un fișier
+          
             """
             with open("/home/marius/ros_catkin_ws/src/6wd_control/logs/predict_log.txt", "a") as f:
                 f.write("[{:.2f}] {}\n".format(now, lcd_msg.replace("\n", " | ")))
             """
 
-        # Publicare imagine și info
+    
         img_msg = numpy_to_image_msg(frame)
         image_pub.publish(img_msg)
 
