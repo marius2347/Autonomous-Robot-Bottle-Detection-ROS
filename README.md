@@ -28,7 +28,7 @@ The robot constantly reads distances from three ultrasonic sensors. Based on thi
 #### Sensor Data and Navigation Prediction (Example Output)
 ![sensors_output_directions_predicctions.png](sensors_output_directions_predicctions.png)
 
-#### RViz View of Laser Scan / Obstacle Detection
+#### RViz View of Laser Scan / Obstacle Detection using LIDAR
 ![rviz.png](rviz.png)
 
 ---
