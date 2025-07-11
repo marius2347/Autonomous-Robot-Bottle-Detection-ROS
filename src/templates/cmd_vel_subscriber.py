@@ -51,7 +51,7 @@ def perform_avoidance():
     set_wheels(-AVOID_SPEED, -AVOID_SPEED); time.sleep(bt)
     stop(); time.sleep(0.5)
 
-    # Choose direction
+    # choose direction
     dir = 'left' if last_left > OBSTACLE_THRESHOLD else 'right'
     rospy.loginfo(f"Turning {dir}")
     if dir=='left':
@@ -60,7 +60,7 @@ def perform_avoidance():
         set_wheels(AVOID_SPEED, -AVOID_SPEED)
     time.sleep(TURN_DURATION); stop(); time.sleep(0.5)
 
-    # Forward
+    # forward
     rospy.loginfo("Driving forward")
     set_wheels(AVOID_SPEED, AVOID_SPEED); time.sleep(FORWARD_DURATION)
     stop(); obstacle_active = False
@@ -84,7 +84,8 @@ def cmd_vel_cb(msg):
     lin, ang = msg.linear.x, msg.angular.z
     if lin==0 and ang==0:
         stop(); return
-    # Differential-drive kinematics (wheelbase = 0.5m)
+        
+    # differential-drive kinematics (wheelbase = 0.5m)
     L = 0.5
     left  = lin - ang*L/2
     right = lin + ang*L/2
@@ -101,17 +102,17 @@ def exit_listener():
 if __name__ == '__main__':
     rospy.init_node('motor_control')
 
-    # Start exit listener thread
+    # start exit listener thread
     threading.Thread(target=exit_listener, daemon=True).start()
 
-    # Arduino init
+    # arduino init
     reset_arduino(ARDUINO_PORT)
     board = pyfirmata2.Arduino(ARDUINO_PORT)
     M1_PWM = board.get_pin('d:9:p');  M1_D1 = board.get_pin('d:2:o');  M1_D2 = board.get_pin('d:4:o')
     M2_PWM = board.get_pin('d:10:p'); M2_D1 = board.get_pin('d:7:o');  M2_D2 = board.get_pin('d:8:o')
     board.samplingOn()
 
-    # Subscribers
+    # subscribers
     rospy.Subscriber('/sensor/proximity1', Float32, prox_front_cb)
     rospy.Subscriber('/sensor/proximity2', Float32, lambda m: prox_side_cb(m,'right'))
     rospy.Subscriber('/sensor/proximity3', Float32, lambda m: prox_side_cb(m,'left'))
